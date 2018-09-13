@@ -2159,6 +2159,12 @@ Set the x265 preset.
 @item tune
 Set the x265 tune parameter.
 
+@item profile
+Set profile restrictions.
+
+@item crf
+Set the quality for constant quality mode.
+
 @item forced-idr
 Normally, when forcing a I-frame type, the encoder can select any type
 of I-frame. This option forces it to choose an IDR-frame.
@@ -2359,6 +2365,11 @@ Never write it.
 @itemx always
 Always write it.
 @end table
+@item video_format @var{integer}
+Specifies the video_format written into the sequence display extension
+indicating the source of the video pictures. The default is @samp{unspecified},
+can be @samp{component}, @samp{pal}, @samp{ntsc}, @samp{secam} or @samp{mac}.
+For maximum compatibility, use @samp{component}.
 @end table
 
 @section png
@@ -2713,6 +2724,55 @@ reduce perception. Use in bogus benchmarks.
 Reduces detail but attempts to preserve color at extremely low bitrates.
 @end itemize
 
+@end table
+
+@section libxavs2
+
+xavs2 AVS2-P2/IEEE1857.4 encoder wrapper.
+
+This encoder requires the presence of the libxavs2 headers and library
+during configuration. You need to explicitly configure the build with
+@option{--enable-libxavs2}.
+
+@subsection Options
+
+@table @option
+@item lcu_row_threads
+Set the number of parallel threads for rows from 1 to 8 (default 5).
+
+@item initial_qp
+Set the xavs2 quantization parameter from 1 to 63 (default 34). This is
+used to set the initial qp for the first frame.
+
+@item qp
+Set the xavs2 quantization parameter from 1 to 63 (default 34). This is
+used to set the qp value under constant-QP mode.
+
+@item max_qp
+Set the max qp for rate control from 1 to 63 (default 55).
+
+@item min_qp
+Set the min qp for rate control from 1 to 63 (default 20).
+
+@item speed_level
+Set the Speed level from 0 to 9 (default 0). Higher is better but slower.
+
+@item log_level
+Set the log level from -1 to 3 (default 0). -1: none, 0: error,
+1: warning, 2: info, 3: debug.
+
+@item hierarchical_ref
+Set the hierarchical reference or not (default true).
+
+@item xavs2-params
+Set xavs2 options using a list of @var{key}=@var{value} couples separated
+by ":".
+
+For example to specify libxavs2 encoding options with @option{-xavs2-params}:
+
+@example
+ffmpeg -i input -c:v libxavs2 -xavs2-params preset_level=5 output.avs2
+@end example
 @end table
 
 @c man end VIDEO ENCODERS

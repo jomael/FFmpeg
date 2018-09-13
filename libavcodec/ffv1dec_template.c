@@ -107,7 +107,7 @@ static av_always_inline int RENAME(decode_line)(FFV1Context *s, int w,
     return 0;
 }
 
-static void RENAME(decode_rgb_frame)(FFV1Context *s, uint8_t *src[4], int w, int h, int stride[4])
+static int RENAME(decode_rgb_frame)(FFV1Context *s, uint8_t *src[4], int w, int h, int stride[4])
 {
     int x, y, p;
     TYPE *sample[4][2];
@@ -127,6 +127,7 @@ static void RENAME(decode_rgb_frame)(FFV1Context *s, uint8_t *src[4], int w, int
 
     for (y = 0; y < h; y++) {
         for (p = 0; p < 3 + transparency; p++) {
+            int ret;
             TYPE *temp = sample[p][0]; // FIXME: try a normal buffer
 
             sample[p][0] = sample[p][1];
@@ -135,9 +136,11 @@ static void RENAME(decode_rgb_frame)(FFV1Context *s, uint8_t *src[4], int w, int
             sample[p][1][-1]= sample[p][0][0  ];
             sample[p][0][ w]= sample[p][0][w-1];
             if (lbd && s->slice_coding_mode == 0)
-                RENAME(decode_line)(s, w, sample[p], (p + 1)/2, 9);
+                ret = RENAME(decode_line)(s, w, sample[p], (p + 1)/2, 9);
             else
-                RENAME(decode_line)(s, w, sample[p], (p + 1)/2, bits + (s->slice_coding_mode != 1));
+                ret = RENAME(decode_line)(s, w, sample[p], (p + 1)/2, bits + (s->slice_coding_mode != 1));
+            if (ret < 0)
+                return ret;
         }
         for (x = 0; x < w; x++) {
             int g = sample[0][1][x];
@@ -155,7 +158,7 @@ static void RENAME(decode_rgb_frame)(FFV1Context *s, uint8_t *src[4], int w, int
 
             if (lbd)
                 *((uint32_t*)(src[0] + x*4 + stride[0]*y)) = b + ((unsigned)g<<8) + ((unsigned)r<<16) + ((unsigned)a<<24);
-            else if (sizeof(TYPE) == 4) {
+            else if (sizeof(TYPE) == 4 || transparency) {
                 *((uint16_t*)(src[0] + x*2 + stride[0]*y)) = g;
                 *((uint16_t*)(src[1] + x*2 + stride[1]*y)) = b;
                 *((uint16_t*)(src[2] + x*2 + stride[2]*y)) = r;
@@ -165,9 +168,8 @@ static void RENAME(decode_rgb_frame)(FFV1Context *s, uint8_t *src[4], int w, int
                 *((uint16_t*)(src[0] + x*2 + stride[0]*y)) = b;
                 *((uint16_t*)(src[1] + x*2 + stride[1]*y)) = g;
                 *((uint16_t*)(src[2] + x*2 + stride[2]*y)) = r;
-                if (transparency)
-                    *((uint16_t*)(src[3] + x*2 + stride[3]*y)) = a;
             }
         }
     }
+    return 0;
 }
