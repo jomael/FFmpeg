@@ -27,7 +27,6 @@
 #include "libavutil/colorspace.h"
 #include "libavutil/opt.h"
 #include "libavutil/imgutils.h"
-#include "libavutil/avstring.h"
 #include "libavutil/bswap.h"
 
 typedef struct DVDSubContext
@@ -83,10 +82,7 @@ static int decode_run_8bit(GetBitContext *gb, int *color)
 {
     int len;
     int has_run = get_bits1(gb);
-    if (get_bits1(gb))
-        *color = get_bits(gb, 8);
-    else
-        *color = get_bits(gb, 2);
+    *color = get_bits(gb, 2 + 6*get_bits1(gb));
     if (has_run) {
         if (get_bits1(gb)) {
             len = get_bits(gb, 7);
@@ -128,6 +124,8 @@ static int decode_rle(uint8_t *bitmap, int linesize, int w, int h, uint8_t used_
             len = decode_run_8bit(&gb, &color);
         else
             len = decode_run_2bit(&gb, &color);
+        if (len != INT_MAX && len > w - x)
+            return AVERROR_INVALIDDATA;
         len = FFMIN(len, w - x);
         memset(d + x, color, len);
         used_color[color] = 1;
@@ -596,6 +594,7 @@ static int dvdsub_decode(AVCodecContext *avctx,
     }
 
     if (is_menu < 0) {
+        ctx->buf_size = 0;
     no_subtitle:
         reset_rects(sub);
         *data_size = 0;
@@ -624,18 +623,6 @@ static int dvdsub_decode(AVCodecContext *avctx,
     ctx->buf_size = 0;
     *data_size = 1;
     return buf_size;
-}
-
-static void parse_palette(DVDSubContext *ctx, char *p)
-{
-    int i;
-
-    ctx->has_palette = 1;
-    for(i=0;i<16;i++) {
-        ctx->palette[i] = strtoul(p, &p, 16);
-        while(*p == ',' || av_isspace(*p))
-            p++;
-    }
 }
 
 static int parse_ifo_palette(DVDSubContext *ctx, char *p)
@@ -719,7 +706,8 @@ static int dvdsub_parse_extradata(AVCodecContext *avctx)
             break;
 
         if (strncmp("palette:", data, 8) == 0) {
-            parse_palette(ctx, data + 8);
+            ctx->has_palette = 1;
+            ff_dvdsub_parse_palette(ctx->palette, data + 8);
         } else if (strncmp("size:", data, 5) == 0) {
             int w, h;
             if (sscanf(data + 5, "%dx%d", &w, &h) == 2) {
@@ -748,8 +736,10 @@ static av_cold int dvdsub_init(AVCodecContext *avctx)
 
     if (ctx->ifo_str)
         parse_ifo_palette(ctx, ctx->ifo_str);
-    if (ctx->palette_str)
-        parse_palette(ctx, ctx->palette_str);
+    if (ctx->palette_str) {
+        ctx->has_palette = 1;
+        ff_dvdsub_parse_palette(ctx->palette, ctx->palette_str);
+    }
     if (ctx->has_palette) {
         int i;
         av_log(avctx, AV_LOG_DEBUG, "palette:");

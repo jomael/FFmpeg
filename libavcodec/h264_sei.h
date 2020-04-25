@@ -20,6 +20,7 @@
 #define AVCODEC_H264_SEI_H
 
 #include "get_bits.h"
+#include "h264_ps.h"
 
 /**
  * SEI message types
@@ -67,7 +68,22 @@ typedef enum {
     H264_SEI_FPA_TYPE_2D                  = 6,
 } H264_SEI_FpaType;
 
+typedef struct H264SEITimeCode {
+    /* When not continuously receiving full timecodes, we have to reference
+       the previous timecode received */
+    int full;
+    int frame;
+    int seconds;
+    int minutes;
+    int hours;
+    int dropframe;
+} H264SEITimeCode;
+
 typedef struct H264SEIPictureTiming {
+    // maximum size of pic_timing according to the spec should be 274 bits
+    uint8_t payload[40];
+    int     payload_size_bits;
+
     int present;
     H264_SEI_PicStructType pic_struct;
 
@@ -87,6 +103,16 @@ typedef struct H264SEIPictureTiming {
      * cpb_removal_delay in picture timing SEI message, see H.264 C.1.2
      */
     int cpb_removal_delay;
+
+    /**
+     * Maximum three timecodes in a pic_timing SEI.
+     */
+    H264SEITimeCode timecode[3];
+
+    /**
+     * Number of timecode in use
+     */
+    int timecode_cnt;
 } H264SEIPictureTiming;
 
 typedef struct H264SEIAFD {
@@ -180,5 +206,11 @@ void ff_h264_sei_uninit(H264SEIContext *h);
  * Get stereo_mode string from the h264 frame_packing_arrangement
  */
 const char *ff_h264_sei_stereo_mode(const H264SEIFramePacking *h);
+
+/**
+ * Parse the contents of a picture timing message given an active SPS.
+ */
+int ff_h264_sei_process_picture_timing(H264SEIPictureTiming *h, const SPS *sps,
+                                       void *logctx);
 
 #endif /* AVCODEC_H264_SEI_H */

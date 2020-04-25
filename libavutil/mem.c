@@ -183,23 +183,26 @@ int av_reallocp(void *ptr, size_t size)
 
 void *av_malloc_array(size_t nmemb, size_t size)
 {
-    if (!size || nmemb >= INT_MAX / size)
+    size_t result;
+    if (av_size_mult(nmemb, size, &result) < 0)
         return NULL;
-    return av_malloc(nmemb * size);
+    return av_malloc(result);
 }
 
 void *av_mallocz_array(size_t nmemb, size_t size)
 {
-    if (!size || nmemb >= INT_MAX / size)
+    size_t result;
+    if (av_size_mult(nmemb, size, &result) < 0)
         return NULL;
-    return av_mallocz(nmemb * size);
+    return av_mallocz(result);
 }
 
 void *av_realloc_array(void *ptr, size_t nmemb, size_t size)
 {
-    if (!size || nmemb >= INT_MAX / size)
+    size_t result;
+    if (av_size_mult(nmemb, size, &result) < 0)
         return NULL;
-    return av_realloc(ptr, nmemb * size);
+    return av_realloc(ptr, result);
 }
 
 int av_reallocp_array(void *ptr, size_t nmemb, size_t size)
@@ -243,9 +246,10 @@ void *av_mallocz(size_t size)
 
 void *av_calloc(size_t nmemb, size_t size)
 {
-    if (size <= 0 || nmemb >= INT_MAX / size)
+    size_t result;
+    if (av_size_mult(nmemb, size, &result) < 0)
         return NULL;
-    return av_mallocz(nmemb * size);
+    return av_mallocz(result);
 }
 
 char *av_strdup(const char *s)
@@ -398,6 +402,18 @@ static void fill24(uint8_t *dst, int len)
 static void fill32(uint8_t *dst, int len)
 {
     uint32_t v = AV_RN32(dst - 4);
+
+#if HAVE_FAST_64BIT
+    uint64_t v2= v + ((uint64_t)v<<32);
+    while (len >= 32) {
+        AV_WN64(dst   , v2);
+        AV_WN64(dst+ 8, v2);
+        AV_WN64(dst+16, v2);
+        AV_WN64(dst+24, v2);
+        dst += 32;
+        len -= 32;
+    }
+#endif
 
     while (len >= 4) {
         AV_WN32(dst, v);

@@ -112,10 +112,20 @@ static int vp9_frame_alloc(AVCodecContext *avctx, VP9Frame *f)
         return ret;
 
     sz = 64 * s->sb_cols * s->sb_rows;
-    f->extradata = av_buffer_allocz(sz * (1 + sizeof(VP9mvrefPair)));
+    if (sz != s->frame_extradata_pool_size) {
+        av_buffer_pool_uninit(&s->frame_extradata_pool);
+        s->frame_extradata_pool = av_buffer_pool_init(sz * (1 + sizeof(VP9mvrefPair)), NULL);
+        if (!s->frame_extradata_pool) {
+            s->frame_extradata_pool_size = 0;
+            goto fail;
+        }
+        s->frame_extradata_pool_size = sz;
+    }
+    f->extradata = av_buffer_pool_get(s->frame_extradata_pool);
     if (!f->extradata) {
         goto fail;
     }
+    memset(f->extradata->data, 0, f->extradata->size);
 
     f->segmentation_map = f->extradata->data;
     f->mv = (VP9mvrefPair *) (f->extradata->data + sz);
@@ -173,7 +183,8 @@ static int update_size(AVCodecContext *avctx, int w, int h)
 #define HWACCEL_MAX (CONFIG_VP9_DXVA2_HWACCEL + \
                      CONFIG_VP9_D3D11VA_HWACCEL * 2 + \
                      CONFIG_VP9_NVDEC_HWACCEL + \
-                     CONFIG_VP9_VAAPI_HWACCEL)
+                     CONFIG_VP9_VAAPI_HWACCEL + \
+                     CONFIG_VP9_VDPAU_HWACCEL)
     enum AVPixelFormat pix_fmts[HWACCEL_MAX + 2], *fmtp = pix_fmts;
     VP9Context *s = avctx->priv_data;
     uint8_t *p;
@@ -188,6 +199,9 @@ static int update_size(AVCodecContext *avctx, int w, int h)
 
         switch (s->pix_fmt) {
         case AV_PIX_FMT_YUV420P:
+#if CONFIG_VP9_VDPAU_HWACCEL
+            *fmtp++ = AV_PIX_FMT_VDPAU;
+#endif
         case AV_PIX_FMT_YUV420P10:
 #if CONFIG_VP9_DXVA2_HWACCEL
             *fmtp++ = AV_PIX_FMT_DXVA2_VLD;
@@ -353,7 +367,7 @@ static av_always_inline int inv_recenter_nonneg(int v, int m)
 // differential forward probability updates
 static int update_prob(VP56RangeCoder *c, int p)
 {
-    static const int inv_map_table[255] = {
+    static const uint8_t inv_map_table[255] = {
           7,  20,  33,  46,  59,  72,  85,  98, 111, 124, 137, 150, 163, 176,
         189, 202, 215, 228, 241, 254,   1,   2,   3,   4,   5,   6,   8,   9,
          10,  11,  12,  13,  14,  15,  16,  17,  18,  19,  21,  22,  23,  24,
@@ -510,7 +524,7 @@ static int decode_frame_header(AVCodecContext *avctx,
     s->s.h.use_last_frame_mvs = !s->s.h.errorres && !last_invisible;
 
     if (s->s.h.keyframe) {
-        if (get_bits_long(&s->gb, 24) != VP9_SYNCCODE) { // synccode
+        if (get_bits(&s->gb, 24) != VP9_SYNCCODE) { // synccode
             av_log(avctx, AV_LOG_ERROR, "Invalid sync code\n");
             return AVERROR_INVALIDDATA;
         }
@@ -526,7 +540,7 @@ static int decode_frame_header(AVCodecContext *avctx,
         s->s.h.intraonly = s->s.h.invisible ? get_bits1(&s->gb) : 0;
         s->s.h.resetctx  = s->s.h.errorres ? 0 : get_bits(&s->gb, 2);
         if (s->s.h.intraonly) {
-            if (get_bits_long(&s->gb, 24) != VP9_SYNCCODE) { // synccode
+            if (get_bits(&s->gb, 24) != VP9_SYNCCODE) { // synccode
                 av_log(avctx, AV_LOG_ERROR, "Invalid sync code\n");
                 return AVERROR_INVALIDDATA;
             }
@@ -1202,16 +1216,14 @@ static av_cold int vp9_decode_free(AVCodecContext *avctx)
     int i;
 
     for (i = 0; i < 3; i++) {
-        if (s->s.frames[i].tf.f->buf[0])
-            vp9_frame_unref(avctx, &s->s.frames[i]);
+        vp9_frame_unref(avctx, &s->s.frames[i]);
         av_frame_free(&s->s.frames[i].tf.f);
     }
+    av_buffer_pool_uninit(&s->frame_extradata_pool);
     for (i = 0; i < 8; i++) {
-        if (s->s.refs[i].f->buf[0])
-            ff_thread_release_buffer(avctx, &s->s.refs[i]);
+        ff_thread_release_buffer(avctx, &s->s.refs[i]);
         av_frame_free(&s->s.refs[i].f);
-        if (s->next_refs[i].f->buf[0])
-            ff_thread_release_buffer(avctx, &s->next_refs[i]);
+        ff_thread_release_buffer(avctx, &s->next_refs[i]);
         av_frame_free(&s->next_refs[i].f);
     }
 
@@ -1306,6 +1318,9 @@ static int decode_tiles(AVCodecContext *avctx,
                         decode_sb_mem(td, row, col, lflvl_ptr,
                                       yoff2, uvoff2, BL_64X64);
                     } else {
+                        if (vpX_rac_is_end(td->c)) {
+                            return AVERROR_INVALIDDATA;
+                        }
                         decode_sb(td, row, col, lflvl_ptr,
                                   yoff2, uvoff2, BL_64X64);
                     }
@@ -1723,7 +1738,6 @@ static av_cold int vp9_decode_init(AVCodecContext *avctx)
 {
     VP9Context *s = avctx->priv_data;
 
-    avctx->internal->allocate_progress = 1;
     s->last_bpp = 0;
     s->s.h.filter.sharpness = -1;
 
@@ -1731,11 +1745,6 @@ static av_cold int vp9_decode_init(AVCodecContext *avctx)
 }
 
 #if HAVE_THREADS
-static av_cold int vp9_decode_init_thread_copy(AVCodecContext *avctx)
-{
-    return init_frames(avctx);
-}
-
 static int vp9_decode_update_thread_context(AVCodecContext *dst, const AVCodecContext *src)
 {
     int i, ret;
@@ -1792,9 +1801,9 @@ AVCodec ff_vp9_decoder = {
     .close                 = vp9_decode_free,
     .decode                = vp9_decode_frame,
     .capabilities          = AV_CODEC_CAP_DR1 | AV_CODEC_CAP_FRAME_THREADS | AV_CODEC_CAP_SLICE_THREADS,
-    .caps_internal         = FF_CODEC_CAP_SLICE_THREAD_HAS_MF,
+    .caps_internal         = FF_CODEC_CAP_SLICE_THREAD_HAS_MF |
+                             FF_CODEC_CAP_ALLOCATE_PROGRESS,
     .flush                 = vp9_decode_flush,
-    .init_thread_copy      = ONLY_IF_THREADS_ENABLED(vp9_decode_init_thread_copy),
     .update_thread_context = ONLY_IF_THREADS_ENABLED(vp9_decode_update_thread_context),
     .profiles              = NULL_IF_CONFIG_SMALL(ff_vp9_profiles),
     .bsfs                  = "vp9_superframe_split",
@@ -1813,6 +1822,9 @@ AVCodec ff_vp9_decoder = {
 #endif
 #if CONFIG_VP9_VAAPI_HWACCEL
                                HWACCEL_VAAPI(vp9),
+#endif
+#if CONFIG_VP9_VDPAU_HWACCEL
+                               HWACCEL_VDPAU(vp9),
 #endif
                                NULL
                            },

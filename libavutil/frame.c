@@ -25,6 +25,7 @@
 #include "imgutils.h"
 #include "mem.h"
 #include "samplefmt.h"
+#include "hwcontext.h"
 
 #if FF_API_FRAME_GET_SET
 MAKE_ACCESSORS(AVFrame, frame, int64_t, best_effort_timestamp)
@@ -243,11 +244,13 @@ static int get_video_buffer(AVFrame *frame, int align)
         return ret;
 
     frame->buf[0] = av_buffer_alloc(ret + 4*plane_padding);
-    if (!frame->buf[0])
+    if (!frame->buf[0]) {
+        ret = AVERROR(ENOMEM);
         goto fail;
+    }
 
-    if (av_image_fill_pointers(frame->data, frame->format, padded_height,
-                               frame->buf[0]->data, frame->linesize) < 0)
+    if ((ret = av_image_fill_pointers(frame->data, frame->format, padded_height,
+                                      frame->buf[0]->data, frame->linesize)) < 0)
         goto fail;
 
     for (i = 1; i < 4; i++) {
@@ -260,7 +263,7 @@ static int get_video_buffer(AVFrame *frame, int align)
     return 0;
 fail:
     av_frame_unref(frame);
-    return AVERROR(ENOMEM);
+    return ret;
 }
 
 static int get_audio_buffer(AVFrame *frame, int align)
@@ -624,7 +627,11 @@ int av_frame_make_writable(AVFrame *frame)
     tmp.channels       = frame->channels;
     tmp.channel_layout = frame->channel_layout;
     tmp.nb_samples     = frame->nb_samples;
-    ret = av_frame_get_buffer(&tmp, 32);
+
+    if (frame->hw_frames_ctx)
+        ret = av_hwframe_get_buffer(frame->hw_frames_ctx, &tmp, 0);
+    else
+        ret = av_frame_get_buffer(&tmp, 32);
     if (ret < 0)
         return ret;
 
@@ -750,6 +757,9 @@ static int frame_copy_video(AVFrame *dst, const AVFrame *src)
         dst->height < src->height)
         return AVERROR(EINVAL);
 
+    if (src->hw_frames_ctx || dst->hw_frames_ctx)
+        return av_hwframe_transfer_data(dst, src, 0);
+
     planes = av_pix_fmt_count_planes(dst->format);
     for (i = 0; i < planes; i++)
         if (!dst->data[i] || !src->data[i])
@@ -804,7 +814,7 @@ void av_frame_remove_side_data(AVFrame *frame, enum AVFrameSideDataType type)
 {
     int i;
 
-    for (i = 0; i < frame->nb_side_data; i++) {
+    for (i = frame->nb_side_data - 1; i >= 0; i--) {
         AVFrameSideData *sd = frame->side_data[i];
         if (sd->type == type) {
             free_side_data(&frame->side_data[i]);
@@ -831,9 +841,15 @@ const char *av_frame_side_data_name(enum AVFrameSideDataType type)
     case AV_FRAME_DATA_MASTERING_DISPLAY_METADATA:  return "Mastering display metadata";
     case AV_FRAME_DATA_CONTENT_LIGHT_LEVEL:         return "Content light level metadata";
     case AV_FRAME_DATA_GOP_TIMECODE:                return "GOP timecode";
+    case AV_FRAME_DATA_S12M_TIMECODE:               return "SMPTE 12-1 timecode";
+    case AV_FRAME_DATA_SPHERICAL:                   return "Spherical Mapping";
     case AV_FRAME_DATA_ICC_PROFILE:                 return "ICC profile";
+#if FF_API_FRAME_QP
     case AV_FRAME_DATA_QP_TABLE_PROPERTIES:         return "QP table properties";
     case AV_FRAME_DATA_QP_TABLE_DATA:               return "QP table data";
+#endif
+    case AV_FRAME_DATA_DYNAMIC_HDR_PLUS: return "HDR Dynamic Metadata SMPTE2094-40 (HDR10+)";
+    case AV_FRAME_DATA_REGIONS_OF_INTEREST: return "Regions Of Interest";
     }
     return NULL;
 }
